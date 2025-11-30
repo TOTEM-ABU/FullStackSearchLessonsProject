@@ -3,33 +3,38 @@ import React, {
   useContext,
   useState,
   useEffect,
+  type ReactNode,
 } from "react";
-import type { ReactNode } from "react";
-import { authAPI } from "../lib/api";
-import type { UserData } from "../lib/api";
+import { authAPI, usersAPI } from "../services/api";
+import type {
+  User,
+  LoginRequest,
+  RegisterRequest,
+  LoginResponse,
+} from "../types";
 
 interface AuthContextType {
-  user: UserData | null;
+  user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (userData: {
-    firstName: string;
-    lastName: string;
-    email: string;
-    password: string;
-    phoneNumber: string;
-    yearOfBirth: string;
-    regionId?: string;
-  }) => Promise<void>;
-  logout: () => void;
+  pendingVerification: string | null; // email pending OTP verification
+  login: (data: LoginRequest) => Promise<void>;
+  register: (data: RegisterRequest) => Promise<void>;
   verifyOtp: (email: string, otp: string) => Promise<void>;
   resendOtp: (email: string) => Promise<void>;
+  updatePassword: (oldPassword: string, newPassword: string) => Promise<void>;
+  updateUser: (userData: Partial<User>) => Promise<void>;
+  logout: () => void;
+  hasRole: (roles: string | string[]) => boolean;
+  isAdmin: () => boolean;
+  isSuperAdmin: () => boolean;
+  isCEO: () => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = () => {
+// Custom hook to use the AuthContext
+export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (context === undefined) {
     throw new Error("useAuth must be used within an AuthProvider");
@@ -37,106 +42,253 @@ export const useAuth = () => {
   return context;
 };
 
-interface AuthProviderProps {
-  children: ReactNode;
-}
+// Export the context so it can be used in the useAuth hook
+export { AuthContext };
 
-export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
-  const [user, setUser] = useState<UserData | null>(null);
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({
+  children,
+}) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingVerification, setPendingVerification] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
-    // Check if user is logged in on app start
-    const token = localStorage.getItem("accessToken");
-    if (token) {
-      // For now, we'll just check if token exists
-      // In a real app, you'd validate the token with the backend
-      setIsLoading(false);
-    } else {
-      setIsLoading(false);
-    }
+    // Check if user is logged in on mount
+    const checkAuth = async () => {
+      try {
+        const storedUser = localStorage.getItem("user");
+        const token = localStorage.getItem("access_token");
+        const pendingEmail = localStorage.getItem("pending_verification");
+
+        if (pendingEmail) {
+          setPendingVerification(pendingEmail);
+        }
+
+        if (token) {
+          setIsAuthenticated(true);
+        }
+        if (storedUser) {
+          const userData = JSON.parse(storedUser);
+          setUser(userData);
+        }
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        localStorage.removeItem("user");
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
+        localStorage.removeItem("pending_verification");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkAuth();
   }, []);
 
-  const login = async (email: string, password: string) => {
+  const login = async (data: LoginRequest) => {
     try {
-      const response = await authAPI.login({ email, password });
-      const { access_token, refresh_token } = response.data;
+      setIsLoading(true);
+      const response: LoginResponse = await authAPI.login(data);
 
-      localStorage.setItem("accessToken", access_token);
-      localStorage.setItem("refreshToken", refresh_token);
-
-      // Since backend doesn't return user data with login, we'll set a basic user object
-      // In a real app, you'd want to add a profile endpoint to the backend
-      setUser({
-        id: "",
-        firstName: "",
-        lastName: "",
-        email,
-        role: "USER",
-        phoneNumber: "",
-        avatar: "",
-        status: true,
-             } as UserData);
+      localStorage.setItem("access_token", response.access_token);
+      localStorage.setItem("refresh_token", response.refresh_token);
+      setIsAuthenticated(true);
+      // Keep existing user info if present (e.g., after register)
+      const storedUser = localStorage.getItem("user");
+      if (storedUser) {
+        setUser(JSON.parse(storedUser));
+      }
     } catch (error) {
-      console.error("Login error:", error);
+      console.error("Login failed:", error);
       throw error;
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const register = async (userData: {
-    firstName: string;
-    lastName: string;
-    email: string;
-    password: string;
-    phoneNumber: string;
-    yearOfBirth: string;
-    regionId?: string;
-  }) => {
+  const register = async (data: RegisterRequest) => {
     try {
-      await authAPI.register(userData);
+      setIsLoading(true);
+      const createdUser: User = await authAPI.register(data);
+      // Save user locally; OTP verification and login are separate steps
+      setUser(createdUser);
+      localStorage.setItem("user", JSON.stringify(createdUser));
+
+      // Registration successful, but user needs to verify OTP
+      setPendingVerification(data.email);
+      localStorage.setItem("pending_verification", data.email);
     } catch (error) {
-      console.error("Register error:", error);
+      console.error("Registration failed:", error);
       throw error;
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const verifyOtp = async (email: string, otp: string) => {
     try {
-      const response = await authAPI.verifyOtp({ email, otp });
-      // OTP verification only returns a message, not tokens
-      // User needs to login after verification
-      return response.data;
-    } catch (error) {
-      console.error("OTP verification error:", error);
-      throw error;
+      setIsLoading(true);
+      await authAPI.verifyOtp({ email, otp });
+
+      // OTP verification successful
+      localStorage.removeItem("pending_verification");
+      setPendingVerification(null);
+
+      // Now user can login
+      // OTP verification successful, user can now proceed to login
+    } catch (error: unknown) {
+      console.error("OTP verification failed:", error);
+      const errorMessage =
+        error &&
+        typeof error === "object" &&
+        "response" in error &&
+        error.response &&
+        typeof error.response === "object" &&
+        "data" in error.response &&
+        error.response.data &&
+        typeof error.response.data === "object" &&
+        "message" in error.response.data
+          ? String(error.response.data.message)
+          : "OTP verification failed";
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const resendOtp = async (email: string) => {
     try {
+      setIsLoading(true);
       await authAPI.resendOtp({ email });
-    } catch (error) {
-      console.error("Resend OTP error:", error);
-      throw error;
+      // OTP resent successfully
+    } catch (error: unknown) {
+      console.error("Failed to resend OTP:", error);
+      const errorMessage =
+        error &&
+        typeof error === "object" &&
+        "response" in error &&
+        error.response &&
+        typeof error.response === "object" &&
+        "data" in error.response &&
+        error.response.data &&
+        typeof error.response.data === "object" &&
+        "message" in error.response.data
+          ? String(error.response.data.message)
+          : "Failed to resend OTP";
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const updatePassword = async (oldPassword: string, newPassword: string) => {
+    try {
+      setIsLoading(true);
+      await authAPI.updatePassword({ oldPassword, newPassword });
+      // Password updated successfully
+    } catch (error: unknown) {
+      console.error("Password update failed:", error);
+      const errorMessage =
+        error &&
+        typeof error === "object" &&
+        "response" in error &&
+        error.response &&
+        typeof error.response === "object" &&
+        "data" in error.response &&
+        error.response.data &&
+        typeof error.response.data === "object" &&
+        "message" in error.response.data
+          ? String(error.response.data.message)
+          : "Password update failed";
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const updateUser = async (userData: Partial<User>) => {
+    try {
+      if (!user) throw new Error("No user to update");
+
+      setIsLoading(true);
+      const updatedUser = await usersAPI.updateUser(user.id, userData);
+
+      // Update local state
+      setUser(updatedUser);
+      localStorage.setItem("user", JSON.stringify(updatedUser));
+    } catch (error: unknown) {
+      console.error("User update failed:", error);
+      const errorMessage =
+        error &&
+        typeof error === "object" &&
+        "response" in error &&
+        error.response &&
+        typeof error.response === "object" &&
+        "data" in error.response &&
+        error.response.data &&
+        typeof error.response.data === "object" &&
+        "message" in error.response.data
+          ? String(error.response.data.message)
+          : "User update failed";
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const logout = () => {
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
+    localStorage.removeItem("user");
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    localStorage.removeItem("pending_verification");
     setUser(null);
+    setIsAuthenticated(false);
+    setPendingVerification(null);
   };
 
-  const value: AuthContextType = {
-    user,
-    isAuthenticated: !!user,
-    isLoading,
-    login,
-    register,
-    logout,
-    verifyOtp,
-    resendOtp,
+  // Role-based access helpers
+  const hasRole = (roles: string | string[]): boolean => {
+    if (!user) return false;
+    const roleArray = Array.isArray(roles) ? roles : [roles];
+    return roleArray.includes(user.role);
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  const isAdmin = (): boolean => {
+    return hasRole(["ADMIN", "SUPER_ADMIN", "CEO"]);
+  };
+
+  const isSuperAdmin = (): boolean => {
+    return hasRole("SUPER_ADMIN");
+  };
+
+  const isCEO = (): boolean => {
+    return hasRole("CEO");
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        isAuthenticated,
+        isLoading,
+        pendingVerification,
+        login,
+        register,
+        verifyOtp,
+        resendOtp,
+        updatePassword,
+        updateUser,
+        logout,
+        hasRole,
+        isAdmin,
+        isSuperAdmin,
+        isCEO,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 };

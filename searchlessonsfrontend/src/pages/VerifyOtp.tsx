@@ -1,31 +1,41 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Mail, ArrowLeft, RotateCcw } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import {
+  Shield,
+  RefreshCw,
+  ArrowLeft,
+  CheckCircle,
+  AlertCircle,
+} from "lucide-react";
 
 const VerifyOtp: React.FC = () => {
-  const [otp, setOtp] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const [error, setError] = useState("");
-  const [countdown, setCountdown] = useState(0);
+  const [success, setSuccess] = useState("");
+  const [resending, setResending] = useState(false);
+  const [countdown, setCountdown] = useState(60);
+  const [canResend, setCanResend] = useState(false);
 
-  const { verifyOtp, resendOtp } = useAuth();
+  const { verifyOtp, resendOtp, isLoading, pendingVerification } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const email = location.state?.email;
+
+  // Get email from state or pendingVerification
+  const email = location.state?.email || pendingVerification;
 
   useEffect(() => {
+    // If no email or pending verification, redirect to register
     if (!email) {
-      navigate("/register");
+      navigate("/auth/register");
       return;
     }
 
-    // Start countdown for resend
-    setCountdown(60);
+    // Start countdown for resend OTP
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
-          clearInterval(timer);
+          setCanResend(true);
           return 0;
         }
         return prev - 1;
@@ -35,142 +45,226 @@ const VerifyOtp: React.FC = () => {
     return () => clearInterval(timer);
   }, [email, navigate]);
 
+  const handleOtpChange = (index: number, value: string) => {
+    if (value.length > 1) return; // Only allow single digit
+
+    const newOtp = [...otp];
+    newOtp[index] = value;
+    setOtp(newOtp);
+
+    // Auto-focus next input
+    if (value && index < 5) {
+      const nextInput = document.getElementById(`otp-${index + 1}`);
+      nextInput?.focus();
+    }
+
+    // Clear errors when user types
+    if (error) setError("");
+    if (success) setSuccess("");
+  };
+
+  const handleKeyDown = (index: number, e: React.KeyboardEvent) => {
+    // Handle backspace
+    if (e.key === "Backspace" && !otp[index] && index > 0) {
+      const prevInput = document.getElementById(`otp-${index - 1}`);
+      prevInput?.focus();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    setLoading(true);
+    setSuccess("");
+
+    const otpCode = otp.join("");
+    if (otpCode.length !== 6) {
+      setError("Iltimos, 6 raqamli kodni to'liq kiriting");
+      return;
+    }
 
     try {
-      await verifyOtp(email, otp);
-      navigate("/");
-    } catch (error: any) {
-      setError(
-        error.response?.data?.message || "OTP tasdiqlashda xatolik yuz berdi"
-      );
-    } finally {
-      setLoading(false);
+      await verifyOtp(email!, otpCode);
+      setSuccess("Tasdiqlash muvaffaqiyatli! Endi tizimga kiring.");
+
+      // Redirect to login after 2 seconds
+      setTimeout(() => {
+        navigate("/auth/login", {
+          state: { message: "Akkaunt tasdiqlandi! Endi tizimga kiring." },
+        });
+      }, 2000);
+    } catch (err: any) {
+      setError(err.message || "Tasdiqlash kodida xatolik");
     }
   };
 
   const handleResendOtp = async () => {
+    if (!canResend || resending) return;
+
     try {
-      await resendOtp(email);
-      setCountdown(60);
+      setResending(true);
       setError("");
-    } catch (error: any) {
-      setError(
-        error.response?.data?.message ||
-          "OTP qayta yuborishda xatolik yuz berdi"
-      );
+      await resendOtp(email!);
+      setSuccess("Yangi tasdiqlash kodi yuborildi!");
+
+      // Reset countdown
+      setCountdown(60);
+      setCanResend(false);
+
+      // Clear success message after 3 seconds
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err: any) {
+      setError(err.message || "Kod yuborishda xatolik");
+    } finally {
+      setResending(false);
     }
   };
 
-  const handleOtpChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value.replace(/\D/g, "").slice(0, 6);
-    setOtp(value);
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  if (!email) {
-    return null;
-  }
-
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="text-center">
-          <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-primary-100 mb-4">
-            <Mail className="h-6 w-6 text-primary-600" />
-          </div>
-          <h2 className="text-3xl font-bold text-gray-900">Email tasdiqlash</h2>
-          <p className="mt-2 text-sm text-gray-600">
-            {email} manziliga yuborilgan kodni kiriting
-          </p>
-        </div>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-8">
+        <div className="bg-white rounded-xl shadow-lg p-8">
+          <div className="text-center">
+            <button
+              onClick={() => navigate("/auth/register")}
+              className="absolute top-4 left-4 p-2 text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="card">
-          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="mx-auto h-12 w-12 bg-green-100 rounded-full flex items-center justify-center">
+              <Shield className="h-6 w-6 text-green-600" />
+            </div>
+            <h2 className="mt-6 text-3xl font-bold text-gray-900">
+              Akkauntni tasdiqlash
+            </h2>
+            <p className="mt-2 text-sm text-gray-600">
+              {email} manziliga yuborilgan 6 raqamli kodni kiriting
+            </p>
+          </div>
+
+          <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md">
-                {error}
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start space-x-3">
+                <AlertCircle className="h-5 w-5 text-red-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-red-700">{error}</div>
+              </div>
+            )}
+
+            {success && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-start space-x-3">
+                <CheckCircle className="h-5 w-5 text-green-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-green-700">{success}</div>
               </div>
             )}
 
             <div>
-              <label
-                htmlFor="otp"
-                className="block text-sm font-medium text-gray-700 mb-2"
-              >
+              <label className="block text-sm font-medium text-gray-700 mb-4 text-center">
                 Tasdiqlash kodi
               </label>
-              <input
-                id="otp"
-                name="otp"
-                type="text"
-                required
-                value={otp}
-                onChange={handleOtpChange}
-                className="input-field text-center text-2xl tracking-widest"
-                placeholder="000000"
-                maxLength={6}
-              />
-              <p className="mt-2 text-sm text-gray-500">
-                6 xonali kodni kiriting
-              </p>
+              <div className="flex justify-center space-x-3">
+                {otp.map((digit, index) => (
+                  <input
+                    key={index}
+                    id={`otp-${index}`}
+                    type="text"
+                    maxLength={1}
+                    value={digit}
+                    onChange={(e) => handleOtpChange(index, e.target.value)}
+                    onKeyDown={(e) => handleKeyDown(index, e)}
+                    className="w-12 h-12 text-center text-xl font-semibold border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                    placeholder="0"
+                  />
+                ))}
+              </div>
             </div>
 
-            <div>
-              <button
-                type="submit"
-                disabled={loading || otp.length !== 6}
-                className="w-full btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? (
-                  <div className="flex items-center justify-center">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                    Tasdiqlash...
-                  </div>
-                ) : (
-                  "Tasdiqlash"
-                )}
-              </button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              {isLoading ? (
+                <div className="flex items-center space-x-2">
+                  <svg
+                    className="animate-spin h-4 w-4 text-white"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    ></circle>
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  <span>Tekshirish...</span>
+                </div>
+              ) : (
+                "Tasdiqlash"
+              )}
+            </button>
+
+            <div className="text-center space-y-2">
+              <p className="text-sm text-gray-600">Kod kelmadimi?</p>
+              {canResend ? (
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={resending}
+                  className="inline-flex items-center space-x-2 text-sm font-medium text-indigo-600 hover:text-indigo-500 transition-colors disabled:opacity-50"
+                >
+                  {resending ? (
+                    <>
+                      <svg
+                        className="animate-spin h-4 w-4"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        ></circle>
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        ></path>
+                      </svg>
+                      <span>Yuborilmoqda...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4" />
+                      <span>Qayta yuborish</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Qayta yuborish uchun {formatTime(countdown)} kuting
+                </p>
+              )}
             </div>
           </form>
-
-          <div className="mt-6">
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-300" />
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-white text-gray-500">Yoki</span>
-              </div>
-            </div>
-
-            <div className="mt-6 space-y-3">
-              <button
-                type="button"
-                onClick={handleResendOtp}
-                disabled={countdown > 0}
-                className="w-full btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <RotateCcw className="h-4 w-4 mr-2" />
-                {countdown > 0
-                  ? `${countdown} soniyadan keyin`
-                  : "Qayta yuborish"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => navigate("/register")}
-                className="w-full btn-secondary"
-              >
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Orqaga qaytish
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
